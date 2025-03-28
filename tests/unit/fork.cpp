@@ -42,7 +42,7 @@ extern void prints_hello_world() {
 
 	// Make machine forkable (no working memory)
 	machine.prepare_copy_on_write(65536);
-	REQUIRE(machine.banked_memory_pages() == 4);
+	REQUIRE(machine.banked_memory_pages() == 5);
 	REQUIRE(machine.is_forkable());
 	REQUIRE(!machine.is_forked());
 
@@ -249,7 +249,7 @@ extern int get_value() {
 
 	// Make machine forkable (with working memory)
 	machine.prepare_copy_on_write(65536);
-	REQUIRE(machine.banked_memory_pages() == 4);
+	REQUIRE(machine.banked_memory_pages() == 5);
 	REQUIRE(machine.is_forkable());
 	REQUIRE(!machine.is_forked());
 
@@ -293,10 +293,10 @@ extern int get_value() {
 
 	// Value now starts at 1 due to the change in main VM
 	fork1.timed_vmcall(funcaddr, 4.0f);
-	REQUIRE(fork1.return_value() == 2);
+	REQUIRE(fork1.return_value() == 1);
 
 	fork2.timed_vmcall(funcaddr, 4.0f);
-	REQUIRE(fork2.return_value() == 2);
+	REQUIRE(fork2.return_value() == 1);
 }
 
 TEST_CASE("Fork sanity checks w/crashes", "[Fork]")
@@ -363,7 +363,9 @@ extern void crash() {
 TEST_CASE("Fork and run main()", "[Fork]")
 {
 	const auto binary = build_and_load(R"M(
+#include <stdio.h>
 int main() {
+	printf("Hello World!\n");
 	return 666;
 }
 static unsigned value = 12345;
@@ -378,17 +380,20 @@ int func2() {
 }
 )M");
 
-	tinykvm::Machine machine { binary, { .max_mem = MAX_MEMORY } };
+	tinykvm::Machine machine { binary, {
+		.max_mem = MAX_MEMORY,
+		.master_direct_memory_writes = true
+	} };
 
 	// We need to create a Linux environment for runtimes to work well
 	machine.setup_linux({"fork"}, env);
 	REQUIRE(machine.banked_memory_pages() == 0);
 
-	// Make machine forkable (with *NO* working memory)
+	// Make machine forkable (with 4MB working memory)
 	machine.prepare_copy_on_write(4ULL << 20);
+	REQUIRE(machine.banked_memory_capacity_bytes() == 4ULL << 20);
 	REQUIRE(machine.is_forkable());
 	REQUIRE(!machine.is_forked());
-	REQUIRE(machine.return_value() == 0); // Initial register value
 
 	// Run for at most 4 seconds before giving up
 	machine.run(4.0f);
@@ -397,11 +402,10 @@ int func2() {
 	// We only gave it 4MB working memory, so lets mmap allocate that and verify
 	// that if we write more than that, we get an exception thrown
 	REQUIRE_THROWS([&] () {
-		const size_t size = 5ULL << 20;
-		uint64_t addr = machine.mmap_allocate(5ULL << 20);
+		const size_t size = 8ULL << 20;
+		uint64_t addr = machine.mmap_allocate(size);
 		char buffer[4096];
-		for (int i = 0; i < 4096; i++)
-			buffer[i] = 'a';
+		memset(buffer, 'a', sizeof(buffer));
 		for (size_t i = 0; i < size; i += 4096)
 		{
 			machine.copy_to_guest(addr + i, buffer, 4096);
@@ -411,8 +415,10 @@ int func2() {
 	}());
 
 	// There are banked pages now
-	const auto banked_pages_before = machine.banked_memory_pages();
+	const auto banked_pages_before = machine.main_memory().unlocked_memory_pages();
 	REQUIRE(banked_pages_before > 500);
+
+	machine.prepare_copy_on_write(0);
 
 	// Create fork
 	auto fork1 = tinykvm::Machine { machine, {
@@ -426,13 +432,13 @@ int func2() {
 	fork1.vmcall("func2");
 	REQUIRE(fork1.return_value() == 54321);
 
-	// This is problematic, but we will try to fix this later
-	// Forked VM is supposed to diverge from the main VM, regardless of mode
+	// Direct memory writes are enabled, so we when we write a value
+	// to the main VM, it can be visible in the forked VM (depending on the address)
 	machine.vmcall("set_value", 99999);
 	fork1.vmcall("func1");
 	REQUIRE(fork1.return_value() == 99999);
 
-	REQUIRE(machine.banked_memory_pages() == banked_pages_before);
+	REQUIRE(machine.main_memory().unlocked_memory_pages() >= banked_pages_before);
 	REQUIRE(fork1.banked_memory_pages() > 0);
 
 	for (int i = 0; i < 20; i++)

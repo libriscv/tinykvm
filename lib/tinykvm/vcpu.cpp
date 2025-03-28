@@ -377,7 +377,6 @@ void vCPU::set_vcpu_table_at(unsigned index, int value)
 
 void Machine::prepare_copy_on_write(size_t max_work_mem, uint64_t shared_memory_boundary)
 {
-	assert(this->m_prepped == false);
 	this->m_prepped = true;
 	/* Make each writable page read-only, causing page fault.
 	   any page after the @shared_memory_boundary is untouched,
@@ -395,8 +394,12 @@ void Machine::prepare_copy_on_write(size_t max_work_mem, uint64_t shared_memory_
 	memory.banks.set_max_pages(max_work_mem / PAGE_SIZE);
 	/* Without working memory we will not be able to make
 	   this master VM usable after prepare_copy_on_write. */
-	if (max_work_mem == 0)
+	if (max_work_mem == 0) {
+		/* If there are previously banked pages, we need to
+		   flatten them into the main memory. */
+		/// XXX: Implement memory flattening
 		return;
+	}
 	/* This call makes this VM usable after making every page in the
 	   page tables read-only, enabling memory through page faults. */
 	this->setup_cow_mode(this);

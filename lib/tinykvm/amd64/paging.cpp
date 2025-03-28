@@ -594,7 +594,13 @@ char * writable_page_at(vMemory& memory, uint64_t addr, uint64_t verify_flags, b
 					/* Copy-on-write 2MB page */
 
 					/* NOTE: Make sure we are re-reading pd[k] */
-					if (memory.split_hugepages && (pd[k] & PDE64_PS)) { // 2MB page
+					if (memory.main_memory_writes) {
+						unlock_identity_mapped_entry(pd[k]);
+						if (pd[k] & PDE64_PS) {
+							memory.increment_unlocked_pages(512);
+						}
+						goto entry_is_no_longer_copy_on_write;
+					} else if (memory.split_hugepages && (pd[k] & PDE64_PS)) { // 2MB page
 						CLPRINT("-> Splitting a 2MB page, addr=0x%lX rw=%lu cloneable=%lu\n",
 							addr, pd[k] & PDE64_RW, pd[k] & PDE64_CLONEABLE);
 						/* Remove PS flag */
@@ -656,6 +662,7 @@ char * writable_page_at(vMemory& memory, uint64_t addr, uint64_t verify_flags, b
 					CLPRINT("-> Cloning a PD entry: 0x%lX\n", pd[k]);
 				}
 
+entry_is_no_longer_copy_on_write:
 				if (pd[k] & PDE64_PS) { // 2MB page
 					if (UNLIKELY((pd[k] & verify_flags) != verify_flags)) {
 						memory_exception("page_at: pt entry not user writable", addr, pd[k]);
@@ -673,6 +680,7 @@ char * writable_page_at(vMemory& memory, uint64_t addr, uint64_t verify_flags, b
 					if (is_copy_on_write(pt[e])) {
 						if (memory.is_forkable_master() && memory.main_memory_writes) {
 							unlock_identity_mapped_entry(pt[e]);
+							memory.increment_unlocked_pages(1);
 						} else if (write_zeroes || (pt[e] & PDE64_DIRTY) == 0x0) {
 							zero_and_update_entry(memory, pt[e], data, PDE64_RW);
 						} else {
